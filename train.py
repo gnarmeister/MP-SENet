@@ -23,6 +23,8 @@ from utils import scan_checkpoint, load_checkpoint, save_checkpoint
 
 torch.backends.cudnn.benchmark = True
 
+import numpy as np
+
 
 def train(rank, a, h):
     if h.num_gpus > 1:
@@ -85,6 +87,7 @@ def train(rank, a, h):
         training_indexes,
         a.input_clean_wavs_dir,
         a.input_noisy_wavs_dir,
+        a.noise_log_dir,
         h.segment_size,
         h.sampling_rate,
         split=True,
@@ -103,6 +106,7 @@ def train(rank, a, h):
             validation_indexes,
             a.input_clean_wavs_dir,
             a.input_noisy_wavs_dir,
+            a.noise_log_dir,
             h.segment_size,
             h.sampling_rate,
             split=False,
@@ -132,15 +136,21 @@ def train(rank, a, h):
 
             if rank == 0:
                 start_b = time.time()
-            clean_audio, noisy_audio = batch
+            clean_audio, noisy_audio, noise_log = batch
             clean_audio = torch.autograd.Variable(clean_audio.to(device, non_blocking=True))
             noisy_audio = torch.autograd.Variable(noisy_audio.to(device, non_blocking=True))
+            noise_log = torch.autograd.Variable(noise_log.to(device, non_blocking=True))
             one_labels = torch.ones(h.batch_size).to(device, non_blocking=True)
 
             clean_mag, clean_pha, clean_com = mag_pha_stft(clean_audio, h.n_fft, h.hop_size, h.win_size, h.compress_factor)
             noisy_mag, noisy_pha, noisy_com = mag_pha_stft(noisy_audio, h.n_fft, h.hop_size, h.win_size, h.compress_factor)
+            N = clean_mag.size(1)
+            T = clean_mag.size(2)
+            # get T samples from noise_log
+            noise_log_extended = noise_log[:, np.linspace(0, noise_log.size(1) - 1, T).astype(int)]
+            noise_log_extended = noise_log_extended.unsqueeze(1).repeat(1, N, 1)
 
-            mag_g, pha_g, com_g = generator(noisy_mag, noisy_pha)
+            mag_g, pha_g, com_g = generator(noisy_mag, noisy_pha, noise_log_extended)
 
             audio_g = mag_pha_istft(mag_g, pha_g, h.n_fft, h.hop_size, h.win_size, h.compress_factor)
             mag_g_hat, pha_g_hat, com_g_hat = mag_pha_stft(audio_g, h.n_fft, h.hop_size, h.win_size, h.compress_factor)
@@ -323,10 +333,11 @@ def main():
     parser.add_argument("--group_name", default=None)
     parser.add_argument("--input_clean_wavs_dir", default="VoiceBank+DEMAND/wavs_clean")
     parser.add_argument("--input_noisy_wavs_dir", default="drone_dataset/wavs_noisy")
+    parser.add_argument("--noise_log_dir", default="drone_dataset/noise_logs")
     parser.add_argument("--input_training_file", default="VoiceBank+DEMAND/training.txt")
     parser.add_argument("--input_validation_file", default="VoiceBank+DEMAND/test.txt")
-    parser.add_argument("--checkpoint_path", default="cp_model")
-    parser.add_argument("--config", default="")
+    parser.add_argument("--checkpoint_path", default="cp_model2")
+    parser.add_argument("--config", default="config.json")
     parser.add_argument("--training_epochs", default=400, type=int)
     parser.add_argument("--stdout_interval", default=5, type=int)
     parser.add_argument("--checkpoint_interval", default=5000, type=int)

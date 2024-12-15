@@ -3,26 +3,37 @@ import random
 import torch
 import torch.utils.data
 import librosa
+import numpy as np
+
 
 def mag_pha_stft(y, n_fft, hop_size, win_size, compress_factor=1.0, center=True):
 
     hann_window = torch.hann_window(win_size).to(y.device)
-    stft_spec = torch.stft(y, n_fft, hop_length=hop_size, win_length=win_size, window=hann_window,
-                           center=center, pad_mode='reflect', normalized=False, return_complex=True)
+    stft_spec = torch.stft(
+        y,
+        n_fft,
+        hop_length=hop_size,
+        win_length=win_size,
+        window=hann_window,
+        center=center,
+        pad_mode="reflect",
+        normalized=False,
+        return_complex=True,
+    )
     stft_spec = torch.view_as_real(stft_spec)
-    mag = torch.sqrt(stft_spec.pow(2).sum(-1)+(1e-9))
-    pha = torch.atan2(stft_spec[:, :, :, 1]+(1e-10), stft_spec[:, :, :, 0]+(1e-5))
+    mag = torch.sqrt(stft_spec.pow(2).sum(-1) + (1e-9))
+    pha = torch.atan2(stft_spec[:, :, :, 1] + (1e-10), stft_spec[:, :, :, 0] + (1e-5))
     # Magnitude Compression
     mag = torch.pow(mag, compress_factor)
-    com = torch.stack((mag*torch.cos(pha), mag*torch.sin(pha)), dim=-1)
+    com = torch.stack((mag * torch.cos(pha), mag * torch.sin(pha)), dim=-1)
 
     return mag, pha, com
 
 
 def mag_pha_istft(mag, pha, n_fft, hop_size, win_size, compress_factor=1.0, center=True):
     # Magnitude Decompression
-    mag = torch.pow(mag, (1.0/compress_factor))
-    com = torch.complex(mag*torch.cos(pha), mag*torch.sin(pha))
+    mag = torch.pow(mag, (1.0 / compress_factor))
+    com = torch.complex(mag * torch.cos(pha), mag * torch.sin(pha))
     hann_window = torch.hann_window(win_size).to(com.device)
     wav = torch.istft(com, n_fft, hop_length=hop_size, win_length=win_size, window=hann_window, center=center)
 
@@ -30,24 +41,36 @@ def mag_pha_istft(mag, pha, n_fft, hop_size, win_size, compress_factor=1.0, cent
 
 
 def get_dataset_filelist(a):
-    with open(a.input_training_file, 'r', encoding='utf-8') as fi:
-        training_indexes = [x.split('|')[0] for x in fi.read().split('\n') if len(x) > 0]
+    with open(a.input_training_file, "r", encoding="utf-8") as fi:
+        training_indexes = [x.split("|")[0] for x in fi.read().split("\n") if len(x) > 0]
 
-    with open(a.input_validation_file, 'r', encoding='utf-8') as fi:
-        validation_indexes = [x.split('|')[0] for x in fi.read().split('\n') if len(x) > 0]
+    with open(a.input_validation_file, "r", encoding="utf-8") as fi:
+        validation_indexes = [x.split("|")[0] for x in fi.read().split("\n") if len(x) > 0]
 
     return training_indexes, validation_indexes
 
 
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, training_indexes, clean_wavs_dir, noisy_wavs_dir, segment_size, 
-                sampling_rate, split=True, shuffle=True, n_cache_reuse=1, device=None):
+    def __init__(
+        self,
+        training_indexes,
+        clean_wavs_dir,
+        noisy_wavs_dir,
+        noise_log_dir,
+        segment_size,
+        sampling_rate,
+        split=True,
+        shuffle=True,
+        n_cache_reuse=1,
+        device=None,
+    ):
         self.audio_indexes = training_indexes
         random.seed(1234)
         if shuffle:
             random.shuffle(self.audio_indexes)
         self.clean_wavs_dir = clean_wavs_dir
         self.noisy_wavs_dir = noisy_wavs_dir
+        self.noise_log_dir = noise_log_dir
         self.segment_size = segment_size
         self.sampling_rate = sampling_rate
         self.split = split
@@ -60,36 +83,45 @@ class Dataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         filename = self.audio_indexes[index]
         if self._cache_ref_count == 0:
-            clean_audio, _ = librosa.load(os.path.join(self.clean_wavs_dir, filename + '.wav'), sr=self.sampling_rate)
-            noisy_audio, _ = librosa.load(os.path.join(self.noisy_wavs_dir, filename + '.wav'), sr=self.sampling_rate)
+            clean_audio, _ = librosa.load(os.path.join(self.clean_wavs_dir, filename + ".wav"), sr=self.sampling_rate)
+            noisy_audio, _ = librosa.load(os.path.join(self.noisy_wavs_dir, filename + ".wav"), sr=self.sampling_rate)
+            noise_log = np.load(os.path.join(self.noise_log_dir, filename + ".npy"))
+            # interpolate noise_log to match the length of the audio
+            noise_log = np.interp(np.linspace(0, len(noise_log), len(clean_audio), endpoint=False), np.arange(len(noise_log)), noise_log)
+
             length = min(len(clean_audio), len(noisy_audio))
-            clean_audio, noisy_audio = clean_audio[: length], noisy_audio[: length]
+            clean_audio, noisy_audio, noise_log = clean_audio[:length], noisy_audio[:length], noise_log[:length]
             self.cached_clean_wav = clean_audio
             self.cached_noisy_wav = noisy_audio
+            self.cached_noise_log = noise_log
             self._cache_ref_count = self.n_cache_reuse
         else:
             clean_audio = self.cached_clean_wav
             noisy_audio = self.cached_noisy_wav
+            noise_log = self.cached_noise_log
             self._cache_ref_count -= 1
-        
-        clean_audio, noisy_audio = torch.FloatTensor(clean_audio), torch.FloatTensor(noisy_audio)
-        norm_factor = torch.sqrt(len(noisy_audio) / torch.sum(noisy_audio ** 2.0))
+
+        clean_audio, noisy_audio, noise_log = torch.FloatTensor(clean_audio), torch.FloatTensor(noisy_audio), torch.FloatTensor(noise_log)
+        norm_factor = torch.sqrt(len(noisy_audio) / torch.sum(noisy_audio**2.0))
         clean_audio = (clean_audio * norm_factor).unsqueeze(0)
         noisy_audio = (noisy_audio * norm_factor).unsqueeze(0)
+        noise_log = noise_log.unsqueeze(0)
 
-        assert clean_audio.size(1) == noisy_audio.size(1)
+        assert clean_audio.size(1) == noisy_audio.size(1) and clean_audio.size(1) == noise_log.size(1)
 
         if self.split:
             if clean_audio.size(1) >= self.segment_size:
                 max_audio_start = clean_audio.size(1) - self.segment_size
                 audio_start = random.randint(0, max_audio_start)
-                clean_audio = clean_audio[:, audio_start: audio_start+self.segment_size]
-                noisy_audio = noisy_audio[:, audio_start: audio_start+self.segment_size]
+                clean_audio = clean_audio[:, audio_start : audio_start + self.segment_size]
+                noisy_audio = noisy_audio[:, audio_start : audio_start + self.segment_size]
+                noise_log = noise_log[:, audio_start : audio_start + self.segment_size]
             else:
-                clean_audio = torch.nn.functional.pad(clean_audio, (0, self.segment_size - clean_audio.size(1)), 'constant')
-                noisy_audio = torch.nn.functional.pad(noisy_audio, (0, self.segment_size - noisy_audio.size(1)), 'constant')
+                clean_audio = torch.nn.functional.pad(clean_audio, (0, self.segment_size - clean_audio.size(1)), "constant")
+                noisy_audio = torch.nn.functional.pad(noisy_audio, (0, self.segment_size - noisy_audio.size(1)), "constant")
+                noise_log = torch.nn.functional.pad(noise_log, (0, self.segment_size - noise_log.size(1)), "constant")
 
-        return (clean_audio.squeeze(), noisy_audio.squeeze())
+        return (clean_audio.squeeze(), noisy_audio.squeeze(), noise_log.squeeze())
 
     def __len__(self):
         return len(self.audio_indexes)
