@@ -14,6 +14,7 @@ from dataset import mag_pha_stft, mag_pha_istft
 from models.model import MPNet
 import soundfile as sf
 from rich.progress import track
+import numpy as np
 
 h = None
 device = None
@@ -53,8 +54,22 @@ def inference(a):
             noisy_wav = torch.FloatTensor(noisy_wav).to(device)
             norm_factor = torch.sqrt(len(noisy_wav) / torch.sum(noisy_wav**2.0)).to(device)
             noisy_wav = (noisy_wav * norm_factor).unsqueeze(0)
-            noisy_amp, noisy_pha, noisy_com = mag_pha_stft(noisy_wav, h.n_fft, h.hop_size, h.win_size, h.compress_factor)
-            amp_g, pha_g, com_g = model(noisy_amp, noisy_pha)
+            noisy_amp, noisy_pha, noisy_com = mag_pha_stft(
+                noisy_wav, h.n_fft, h.hop_size, h.win_size, h.compress_factor
+            )
+
+            noise_log = np.load(os.path.join(a.input_noise_log_dir, index.replace(".wav", ".npy")))
+            noise_log = np.interp(
+                np.linspace(0, len(noise_log), noisy_wav.size(1), endpoint=False), np.arange(len(noise_log)), noise_log
+            )
+            noise_log = torch.FloatTensor(noise_log).to(device).unsqueeze(0)
+
+            N = noisy_amp.size(1)
+            T = noisy_amp.size(2)
+            noise_log_extended = noise_log[:, np.linspace(0, noise_log.size(1) - 1, T).astype(int)]
+            noise_log_extended = noise_log_extended.unsqueeze(1).repeat(1, N, 1)
+
+            amp_g, pha_g, com_g = model(noisy_amp, noisy_pha, noise_log_extended)
             audio_g = mag_pha_istft(amp_g, pha_g, h.n_fft, h.hop_size, h.win_size, h.compress_factor)
             audio_g = audio_g / norm_factor
 
@@ -67,8 +82,9 @@ def main():
     print("Initializing Inference Process..")
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input_noisy_wavs_dir", default="drone_dataset/testset_noisy")
-    parser.add_argument("--output_dir", default="../generated_files")
+    parser.add_argument("--input_noisy_wavs_dir", default="data/drone_dataset/testset_noisy")
+    parser.add_argument("--input_noise_log_dir", default="data/drone_dataset/noise_logs")
+    parser.add_argument("--output_dir", default="results/generated_files")
     parser.add_argument("--checkpoint_file", required=True)
     a = parser.parse_args()
 
