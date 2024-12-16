@@ -4,13 +4,13 @@ import numpy as np
 from pydub import AudioSegment
 
 
-noise_m4a_dir = "flightlog_audio_converter/data/audio_synced/"
-noise_wav_dir = "flightlog_audio_converter/data/audio_synced_wav/"
-noise_flightlog_dir = "flightlog_audio_converter/data/flight_csv_processed/"
+noise_m4a_dir = "data/raw_data/data/audio_synced/"
+noise_wav_dir = "data/raw_data/data/audio_synced_wav/"
+noise_flightlog_dir = "data/raw_data/data/flight_csv_processed/"
 
-clean_dir = "VoiceBank+DEMAND/wavs_clean/"
-output_dir = "drone_dataset/wavs_noisy/"
-noise_log_dir = "drone_dataset/noise_logs/"
+clean_dir = "data/VoiceBank+DEMAND/wavs_clean/"
+output_dir = "data/drone_dataset/wavs_noisy/"
+noise_log_dir = "data/drone_dataset/noise_logs/"
 
 # set numpy random seed
 np.random.seed(0)
@@ -71,6 +71,8 @@ for clean_file in tqdm(os.listdir(clean_dir)):
     noise_idx = np.random.randint(0, n_noise)
     noise_file = os.listdir(noise_wav_dir)[noise_idx]
     noise_log_file = os.listdir(noise_flightlog_dir)[noise_idx]
-    combined, noise_log = combine_wav(clean_dir + clean_file, noise_wav_dir + noise_file, noise_flightlog_dir + noise_log_file)
+    combined, noise_log = combine_wav(
+        clean_dir + clean_file, noise_wav_dir + noise_file, noise_flightlog_dir + noise_log_file
+    )
     combined.export(output_dir + clean_file, format="wav")
     np.save(noise_log_dir + clean_file.replace(".wav", ".npy"), noise_log)

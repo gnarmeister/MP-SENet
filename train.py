@@ -99,7 +99,13 @@ def train(rank, a, h):
     train_sampler = DistributedSampler(trainset) if h.num_gpus > 1 else None
 
     train_loader = DataLoader(
-        trainset, num_workers=h.num_workers, shuffle=False, sampler=train_sampler, batch_size=h.batch_size, pin_memory=True, drop_last=True
+        trainset,
+        num_workers=h.num_workers,
+        shuffle=False,
+        sampler=train_sampler,
+        batch_size=h.batch_size,
+        pin_memory=True,
+        drop_last=True,
     )
     if rank == 0:
         validset = Dataset(
@@ -115,7 +121,9 @@ def train(rank, a, h):
             device=device,
         )
 
-        validation_loader = DataLoader(validset, num_workers=1, shuffle=False, sampler=None, batch_size=1, pin_memory=True, drop_last=True)
+        validation_loader = DataLoader(
+            validset, num_workers=1, shuffle=False, sampler=None, batch_size=1, pin_memory=True, drop_last=True
+        )
 
         sw = SummaryWriter(os.path.join(a.checkpoint_path, "logs"))
 
@@ -142,8 +150,12 @@ def train(rank, a, h):
             noise_log = torch.autograd.Variable(noise_log.to(device, non_blocking=True))
             one_labels = torch.ones(h.batch_size).to(device, non_blocking=True)
 
-            clean_mag, clean_pha, clean_com = mag_pha_stft(clean_audio, h.n_fft, h.hop_size, h.win_size, h.compress_factor)
-            noisy_mag, noisy_pha, noisy_com = mag_pha_stft(noisy_audio, h.n_fft, h.hop_size, h.win_size, h.compress_factor)
+            clean_mag, clean_pha, clean_com = mag_pha_stft(
+                clean_audio, h.n_fft, h.hop_size, h.win_size, h.compress_factor
+            )
+            noisy_mag, noisy_pha, noisy_com = mag_pha_stft(
+                noisy_audio, h.n_fft, h.hop_size, h.win_size, h.compress_factor
+            )
             N = clean_mag.size(1)
             T = clean_mag.size(2)
             # get T samples from noise_log
@@ -207,7 +219,14 @@ def train(rank, a, h):
             metric_g = discriminator(clean_mag, mag_g_hat)
             loss_metric = F.mse_loss(metric_g.flatten(), one_labels)
 
-            loss_gen_all = loss_mag * 0.9 + loss_pha * 0.3 + loss_com * 0.1 + loss_stft * 0.1 + loss_metric * 0.05 + loss_time * 0.2
+            loss_gen_all = (
+                loss_mag * 0.9
+                + loss_pha * 0.3
+                + loss_com * 0.1
+                + loss_stft * 0.1
+                + loss_metric * 0.05
+                + loss_time * 0.2
+            )
 
             loss_gen_all.backward()
             optim_g.step()
@@ -241,7 +260,9 @@ def train(rank, a, h):
                 # checkpointing
                 if steps % a.checkpoint_interval == 0 and steps != 0:
                     checkpoint_path = "{}/g_{:08d}".format(a.checkpoint_path, steps)
-                    save_checkpoint(checkpoint_path, {"generator": (generator.module if h.num_gpus > 1 else generator).state_dict()})
+                    save_checkpoint(
+                        checkpoint_path, {"generator": (generator.module if h.num_gpus > 1 else generator).state_dict()}
+                    )
                     checkpoint_path = "{}/do_{:08d}".format(a.checkpoint_path, steps)
                     save_checkpoint(
                         checkpoint_path,
@@ -276,17 +297,29 @@ def train(rank, a, h):
                     val_stft_err_tot = 0
                     with torch.no_grad():
                         for j, batch in enumerate(validation_loader):
-                            clean_audio, noisy_audio = batch
+                            clean_audio, noisy_audio, noise_log = batch
                             clean_audio = torch.autograd.Variable(clean_audio.to(device, non_blocking=True))
                             noisy_audio = torch.autograd.Variable(noisy_audio.to(device, non_blocking=True))
+                            noise_log = torch.autograd.Variable(noise_log.to(device, non_blocking=True))
 
-                            clean_mag, clean_pha, clean_com = mag_pha_stft(clean_audio, h.n_fft, h.hop_size, h.win_size, h.compress_factor)
-                            noisy_mag, noisy_pha, noisy_com = mag_pha_stft(noisy_audio, h.n_fft, h.hop_size, h.win_size, h.compress_factor)
+                            clean_mag, clean_pha, clean_com = mag_pha_stft(
+                                clean_audio, h.n_fft, h.hop_size, h.win_size, h.compress_factor
+                            )
+                            noisy_mag, noisy_pha, noisy_com = mag_pha_stft(
+                                noisy_audio, h.n_fft, h.hop_size, h.win_size, h.compress_factor
+                            )
+                            N = clean_mag.size(1)
+                            T = clean_mag.size(2)
+                            # get T samples from noise_log
+                            noise_log_extended = noise_log[:, np.linspace(0, noise_log.size(1) - 1, T).astype(int)]
+                            noise_log_extended = noise_log_extended.unsqueeze(1).repeat(1, N, 1)
 
-                            mag_g, pha_g, com_g = generator(noisy_mag, noisy_pha)
+                            mag_g, pha_g, com_g = generator(noisy_mag, noisy_pha, noise_log_extended)
 
                             audio_g = mag_pha_istft(mag_g, pha_g, h.n_fft, h.hop_size, h.win_size, h.compress_factor)
-                            mag_g_hat, pha_g_hat, com_g_hat = mag_pha_stft(audio_g, h.n_fft, h.hop_size, h.win_size, h.compress_factor)
+                            mag_g_hat, pha_g_hat, com_g_hat = mag_pha_stft(
+                                audio_g, h.n_fft, h.hop_size, h.win_size, h.compress_factor
+                            )
                             audios_r += torch.split(clean_audio, 1, dim=0)  # [1, T] * B
                             audios_g += torch.split(audio_g, 1, dim=0)
 
@@ -301,7 +334,11 @@ def train(rank, a, h):
                         val_com_err = val_com_err_tot / (j + 1)
                         val_stft_err = val_stft_err_tot / (j + 1)
                         val_pesq_score = pesq_score(audios_r, audios_g, h).item()
-                        print("Steps : {:d}, PESQ Score: {:4.3f}, s/b : {:4.3f}".format(steps, val_pesq_score, time.time() - start_b))
+                        print(
+                            "Steps : {:d}, PESQ Score: {:4.3f}, s/b : {:4.3f}".format(
+                                steps, val_pesq_score, time.time() - start_b
+                            )
+                        )
                         sw.add_scalar("Validation/PESQ Score", val_pesq_score, steps)
                         sw.add_scalar("Validation/Magnitude Loss", val_mag_err, steps)
                         sw.add_scalar("Validation/Phase Loss", val_pha_err, steps)
@@ -312,7 +349,10 @@ def train(rank, a, h):
                         if val_pesq_score > best_pesq:
                             best_pesq = val_pesq_score
                             best_checkpoint_path = "{}/g_best".format(a.checkpoint_path)
-                            save_checkpoint(best_checkpoint_path, {"generator": (generator.module if h.num_gpus > 1 else generator).state_dict()})
+                            save_checkpoint(
+                                best_checkpoint_path,
+                                {"generator": (generator.module if h.num_gpus > 1 else generator).state_dict()},
+                            )
 
                     generator.train()
 
@@ -331,12 +371,12 @@ def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--group_name", default=None)
-    parser.add_argument("--input_clean_wavs_dir", default="VoiceBank+DEMAND/wavs_clean")
-    parser.add_argument("--input_noisy_wavs_dir", default="drone_dataset/wavs_noisy")
-    parser.add_argument("--noise_log_dir", default="drone_dataset/noise_logs")
-    parser.add_argument("--input_training_file", default="VoiceBank+DEMAND/training.txt")
-    parser.add_argument("--input_validation_file", default="VoiceBank+DEMAND/test.txt")
-    parser.add_argument("--checkpoint_path", default="cp_model2")
+    parser.add_argument("--input_clean_wavs_dir", default="data/VoiceBank+DEMAND/wavs_clean")
+    parser.add_argument("--input_noisy_wavs_dir", default="data/drone_dataset/wavs_noisy")
+    parser.add_argument("--noise_log_dir", default="data/drone_dataset/noise_logs")
+    parser.add_argument("--input_training_file", default="data/VoiceBank+DEMAND/training.txt")
+    parser.add_argument("--input_validation_file", default="data/VoiceBank+DEMAND/test.txt")
+    parser.add_argument("--checkpoint_path", default="log/cp_model2")
     parser.add_argument("--config", default="config.json")
     parser.add_argument("--training_epochs", default=400, type=int)
     parser.add_argument("--stdout_interval", default=5, type=int)
